@@ -5127,6 +5127,8 @@ document.head.insertAdjacentHTML('beforeend', `<style>
 #bodypad{position:absolute; inset:0; z-index:30; touch-action:none; cursor:crosshair; outline-offset:-4px;}
 #bodypad .fing{position:absolute; width:46px; height:46px; margin:-23px 0 0 -23px; border-radius:50%; border:3px solid var(--gold); box-shadow:0 0 0 3px rgba(0,0,0,.45); pointer-events:none; display:none;}
 #bodypad.on .fing{display:block;}
+#bodypad .near{position:absolute; left:8px; top:8px; padding:4px 10px; border-radius:999px; background:rgba(0,0,0,.72); color:#fff; font-size:.85rem; font-weight:800; pointer-events:none; display:none;}
+#bodypad.on .near{display:block;}
 .bd-stg{display:grid; grid-template-columns:repeat(4,1fr); gap:4px; margin:2px 0 10px;}
 .bd-stg button{border:1px solid var(--line); background:transparent; border-radius:10px; padding:6px 2px; font-size:.78rem; font-weight:700; min-height:48px; line-height:1.25;}
 .bd-stg button small{display:block; font-weight:500; color:var(--muted); font-size:.68rem;}
@@ -5147,6 +5149,9 @@ function tone(f, t0, dur, type, vol){ const a = ac(); if(!a) return; const o = a
     o.type = type || 'sine'; o.frequency.setValueAtTime(f, T);
     g.gain.setValueAtTime(.0001, T); g.gain.exponentialRampToValueAtTime(vol || .14, T + Math.min(.03, dur / 3)); g.gain.exponentialRampToValueAtTime(.0001, T + dur);
     o.connect(g); g.connect(a.destination); o.start(T); o.stop(T + dur + .05); }
+// 휴대폰 브라우저는 손가락을 '뗄 때'(touchend · click)만 소리를 허락한다. 첫 탭에서 미리 켜 둔다.
+const unlock = () => { const a = ac(); if(!a) return; try{ const b = a.createBuffer(1, 1, 22050), src = a.createBufferSource(); src.buffer = b; src.connect(a.destination); src.start(0); }catch(e){} };
+['touchend', 'click', 'keydown'].forEach(t => document.addEventListener(t, unlock, { capture: true, passive: true }));
 const TEX = {
     hard: { n: '단단한', play(){ for(let i = 0; i < 3; i++) tone(170, i * .11, .07, 'square', .1); buzz([30, 40, 30, 40, 30]); } },   // 짧게 끊김
     soft: { n: '부드러운', play(){ tone(330, 0, .9, 'sine', .14); buzz([300]); } },                                                    // 길게 이어짐
@@ -5239,7 +5244,7 @@ function poseFeel(){
 const T = { key: null, since: 0, told: false, down: false, last: null, loop: null, vx: null, vy: null, crossTold: 0, int: 600 };
 const target = () => { const k = B().path[S().path]; return k ? { key: k, pane: k[0], r: reg(k) } : null; };
 function padOn(){ let pad = $('bodypad');
-    if(!pad){ pad = document.createElement('div'); pad.id = 'bodypad'; pad.tabIndex = 0; pad.setAttribute('role', 'application'); pad.setAttribute('aria-roledescription', '손끝 탐색 판'); pad.innerHTML = '<span class="fing"></span>'; $('art').appendChild(pad);
+    if(!pad){ pad = document.createElement('div'); pad.id = 'bodypad'; pad.tabIndex = 0; pad.setAttribute('role', 'application'); pad.setAttribute('aria-roledescription', '손끝 탐색 판'); pad.innerHTML = '<span class="fing"></span><span class="near" aria-hidden="true"></span>'; $('art').appendChild(pad);
         const at = (x, y) => { T.last = [x, y]; const ar = $('art').getBoundingClientRect(), f = pad.firstChild; f.style.left = (x - ar.left) + 'px'; f.style.top = (y - ar.top) + 'px'; feel(x, y); };
         pad.addEventListener('pointerdown', e => { e.preventDefault(); try{ pad.setPointerCapture(e.pointerId); }catch(_){} T.down = true; pad.classList.add('on'); ac(); at(e.clientX, e.clientY); clearInterval(T.loop); T.loop = setInterval(() => T.down && T.last && feel(...T.last), 150); });
         pad.addEventListener('pointermove', e => { if(T.down) at(e.clientX, e.clientY); });
@@ -5265,11 +5270,21 @@ function feel(cx, cy){
     // 다음 곳에 가까워질수록 빨라지는 신호음
     if(tg && T.down && key !== tg.key){
         if(tg.pane !== k){ if(Date.now() - T.crossTold > 6000){ T.crossTold = Date.now(); speak(`다음 곳은 화면 ${tg.pane === 'A' ? '왼쪽' : '오른쪽'} 절반, ${paneName(tg.pane)}에 있습니다.`); } T.int = 1100; }
-        else T.int = clamp(80 + Math.hypot((tg.r.x - x) / Math.max(tg.r.rx, 5), (tg.r.y - y) / Math.max(tg.r.ry, 5)) * 75, 80, 1000);
+        else { const e = Math.hypot((tg.r.x - x) / tg.r.rx, (tg.r.y - y) / tg.r.ry), edge = Math.max(0, e - 1) * (tg.r.rx + tg.r.ry) / 2;   // 영역 가장자리까지의 거리(사진 크기의 %)
+               T.int = clamp(90 + edge * 18, 90, 1000); }                                                                                // 멀면 1초에 한 번, 닿기 직전엔 0.1초마다
+        if(beepT && T.int < T.cur * .6){ clearTimeout(beepT); beepT = null; }   // 갑자기 가까워지면 기다리지 않고 바로 다시 울림
         if(!beepT) beepLoop();
     }
+    nearShow(tg, k, key);
 }
-function beepLoop(){ if(!T.down || !target()){ beepT = null; return; } tone(T.int > 1000 ? 600 : 1250, 0, .03, 'sine', .055); beepT = setTimeout(beepLoop, T.int); }
+// 눈으로도 확인: 가까울수록 원이 금색 → 초록, 막대가 차오름
+function nearShow(tg, k, key){ const pad = $('bodypad'); if(!pad) return; const n = pad.querySelector('.near'), f = pad.querySelector('.fing');
+    if(!tg){ n.textContent = '자유 탐색'; return; }
+    if(key === tg.key){ n.textContent = '✓ 도착'; f.style.borderColor = '#7ee0a8'; return; }
+    if(tg.pane !== k){ n.textContent = `↔ ${tg.pane === 'A' ? '왼쪽' : '오른쪽'} 화면으로`; f.style.borderColor = 'var(--gold)'; return; }
+    const lv = Math.round(clamp((1000 - T.int) / 920, 0, 1) * 5); n.textContent = '가까움 ' + '●'.repeat(lv) + '○'.repeat(5 - lv);
+    f.style.borderColor = lv >= 4 ? '#7ee0a8' : 'var(--gold)'; }
+function beepLoop(){ if(!T.down || !target()){ beepT = null; return; } tone(T.int > 1000 ? 600 : 1150, 0, .06, 'triangle', .22); T.cur = T.int; beepT = setTimeout(beepLoop, T.int); }
 function tell(key){ texOf(key).play(); speak(say(key, true)); logE('body_touch', { r: key.split(':')[1], pane: key[0], via: 'dwell' }); }
 function reach(key){
     const s = S(); texOf(key).play(); setTimeout(chime, 450);
